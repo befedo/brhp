@@ -35,7 +35,9 @@
     "dist",
     "docs",
     "README.md",
-    "sqlc.yaml"
+    "sqlc.yaml",
+    "index.js",
+    "tui.js"
   ],
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && bun ./scripts/build-tui.mjs",
