@@ -36,6 +36,11 @@ export const createTuiPlugin =
             worktreePath: projectDirectory,
             opencodeSessionId: sessionId,
           }),
+        loadSessions: async () =>
+          (await owner.getRuntime()).listSessions({
+            worktreePath: projectDirectory,
+            opencodeSessionId: sessionId,
+          }),
       });
     };
 

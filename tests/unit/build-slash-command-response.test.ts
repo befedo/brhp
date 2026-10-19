@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildSlashCommandResponse } from '../../src/application/use-cases/build-slash-command-response.js';
+import { buildPlanningSessionListResponse, buildSlashCommandResponse } from '../../src/application/use-cases/build-slash-command-response.js';
 import { classifyRuntimeDiagnostic } from '../../src/application/use-cases/classify-runtime-diagnostic.js';
 
 describe('buildSlashCommandResponse', () => {
@@ -554,5 +554,99 @@ describe('buildSlashCommandResponse', () => {
     expect(response).not.toContain('Temperature');
     expect(response).toContain('Planning session:');
     expect(response).toContain('- Active: s-1');
+  });
+
+  it('renders a list of available sessions', () => {
+    const response = buildPlanningSessionListResponse([
+      {
+        id: 'sess-aaaa1111',
+        worktreePath: '/repo',
+        opencodeSessionId: 'chat-1',
+        initialProblem: 'Design a safe rollout strategy',
+        status: 'exploring',
+        activeScopeId: 'scope-1',
+        rootNodeId: 'node-1',
+        revision: 3,
+        controls: {
+          temperature: 0.35,
+          topP: 0.9,
+          temperatureFloor: 0.1,
+          temperatureCeiling: 1,
+          minDepthClamp: 1,
+          maxDepthClamp: 5,
+          depthClamp: 3,
+        },
+        policy: {
+          policyDocumentIds: [],
+          instructionDocumentIds: [],
+          invariants: [],
+        },
+        summary: {
+          globalEntropy: 0.3,
+          entropyDrift: 0.01,
+          frontierStability: 0.95,
+          blockingFindings: 2,
+          pendingBlockingClauses: 1,
+          converged: false,
+          lastFrontierUpdatedAt: '2026-01-02T00:00:00.000Z',
+        },
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      },
+      {
+        id: 'sess-bbbb2222',
+        worktreePath: '/repo',
+        opencodeSessionId: 'chat-2',
+        initialProblem: 'Refactor the auth module',
+        status: 'converged',
+        activeScopeId: 'scope-2',
+        rootNodeId: 'node-5',
+        revision: 1,
+        controls: {
+          temperature: 0.35,
+          topP: 0.9,
+          temperatureFloor: 0.1,
+          temperatureCeiling: 1,
+          minDepthClamp: 1,
+          maxDepthClamp: 5,
+          depthClamp: 3,
+        },
+        policy: {
+          policyDocumentIds: [],
+          instructionDocumentIds: [],
+          invariants: [],
+        },
+        summary: {
+          globalEntropy: 0.0,
+          entropyDrift: 0.0,
+          frontierStability: 1.0,
+          blockingFindings: 0,
+          pendingBlockingClauses: 0,
+          converged: true,
+          lastFrontierUpdatedAt: '2026-01-03T00:00:00.000Z',
+        },
+        createdAt: '2026-01-03T00:00:00.000Z',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      },
+    ]);
+
+    expect(response).toContain('# BRHP Sessions');
+    expect(response).toContain('2 session(s) found:');
+    expect(response).toContain('sess-aaa…');
+    expect(response).toContain('sess-bbb…');
+    expect(response).toContain('Design a safe rollout strategy');
+    expect(response).toContain('Refactor the auth module');
+    expect(response).toContain('exploring');
+    expect(response).toContain('converged');
+    expect(response).toContain('Converged: no  Blocking: 2');
+    expect(response).toContain('Converged: yes  Blocking: 0');
+    expect(response).toContain('Use `/brhp resume <session id>` to continue a session.');
+  });
+
+  it('renders an empty session list', () => {
+    const response = buildPlanningSessionListResponse([]);
+
+    expect(response).toContain('# BRHP Sessions');
+    expect(response).toContain('No planning sessions found for this worktree.');
   });
 });

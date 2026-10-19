@@ -19,7 +19,7 @@ import {
 import { completeLeafNode } from '../use-cases/complete-leaf-node.js';
 import type { InstructionInventory } from '../../domain/instructions/instruction.js';
 import type { PlanningEvent } from '../../domain/planning/planning-event.js';
-import type { PlanningState } from '../../domain/planning/planning-session.js';
+import type { PlanningSession, PlanningState } from '../../domain/planning/planning-session.js';
 import type { PlannerConfig } from '../../domain/planning/planner-config.js';
 import type { PlanNode, PlanNodeCategory, PlanNodeStatus } from '../../domain/planning/plan-node.js';
 
@@ -106,6 +106,7 @@ export interface PlannerRuntime {
     limit?: number,
     sessionId?: string
   ): Promise<readonly PlanNode[]>;
+  listSessions(context: PlanningSessionContext): Promise<readonly PlanningSession[]>;
 }
 
 export const DEFAULT_QUERY_NODES_LIMIT = 20;
@@ -321,6 +322,10 @@ export function createPlannerRuntime(input: CreatePlannerRuntimeInput): PlannerR
       }
 
       return input.store.searchNodes(resolvedSessionId, query, limit ?? DEFAULT_SEARCH_NODES_LIMIT);
+    },
+
+    async listSessions(context) {
+      return input.store.listSessions(context.worktreePath);
     },
   };
 }

@@ -2,7 +2,7 @@ import type { SidebarGraphPreview, SidebarModel } from '../../domain/sidebar/sid
 import type { PlanNode } from '../../domain/planning/plan-node.js';
 import { BRHP_COMMAND_NAME } from '../../domain/slash-command/brhp-command.js';
 import type { InstructionInventory } from '../../domain/instructions/instruction.js';
-import type { PlanningState } from '../../domain/planning/planning-session.js';
+import type { PlanningSession, PlanningState } from '../../domain/planning/planning-session.js';
 import { buildPlanningSessionSummary } from './build-planning-session-summary.js';
 
 const SIDEBAR_GRAPH_PREVIEW_LIMITS = {
@@ -25,7 +25,8 @@ const FOCUS_NODE_STATUS_ORDER: readonly PlanNode['status'][] = [
 
 export function buildSidebarModel(
   inventory: InstructionInventory,
-  planningState?: PlanningState | null
+  planningState?: PlanningState | null,
+  sessions: readonly PlanningSession[] = []
 ): SidebarModel {
   const planningSummary = planningState
     ? buildPlanningSessionSummary(planningState)
@@ -55,6 +56,16 @@ export function buildSidebarModel(
       source: skipped.source,
       relativePath: skipped.relativePath,
       reason: skipped.reason,
+    })),
+    sessions: sessions.map(session => ({
+      id: session.id,
+      shortId: session.id.slice(0, 8),
+      status: session.status,
+      problem: session.initialProblem,
+      converged: session.summary.converged,
+      blockingFindings: session.summary.blockingFindings,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
     })),
     planning: planningSummary
       ? {

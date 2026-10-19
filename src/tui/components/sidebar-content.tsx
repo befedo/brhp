@@ -196,6 +196,24 @@ export function SidebarContent(props: SidebarContentProps) {
                   </For>
                 </Show>
 
+                <Show when={currentModel.sessions.length > 0}>
+                  <box flexDirection="column">
+                    <text fg={colors().textMuted}>Available sessions:</text>
+                    <For each={currentModel.sessions}>
+                      {session => (
+                        <box flexDirection="column">
+                          <text fg={colors().text}>
+                            • {session.shortId}… [{session.status}] {session.problem}
+                          </text>
+                          <text fg={colors().textMuted}>
+                            Converged: {session.converged ? 'yes' : 'no'}  Blocking: {session.blockingFindings}  Updated: {session.updatedAt}
+                          </text>
+                        </box>
+                      )}
+                    </For>
+                  </box>
+                </Show>
+
                 <Show when={currentModel.skippedFiles.length > 0}>
                   <box flexDirection="column">
                     <text fg={colors().textMuted}>Skipped files:</text>

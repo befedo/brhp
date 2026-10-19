@@ -2,7 +2,10 @@ import type { Plugin } from '@opencode/plugin';
 import type { CommandInvocation } from '@opencode/plugin/promise/command';
 
 import { parseBrhpCommand } from '../application/use-cases/parse-brhp-command.js';
-import { buildSlashCommandResponse } from '../application/use-cases/build-slash-command-response.js';
+import {
+  buildPlanningSessionListResponse,
+  buildSlashCommandResponse,
+} from '../application/use-cases/build-slash-command-response.js';
 import { buildSystemPromptSection } from '../application/use-cases/build-system-prompt-section.js';
 import { buildPlanningInspectResponse } from '../application/use-cases/build-planning-inspect-response.js';
 import type { PlanningState } from '../domain/planning/planning-session.js';
@@ -227,6 +230,18 @@ async function handleBrhpCommand(
       await runtimeAccess.withRuntime(invocation.sessionID, runtime =>
         runtime.resume(contextInfo, sessionId)
       );
+      return;
+    }
+    case 'list': {
+      const sessions = await runtimeAccess.withRuntime(
+        invocation.sessionID,
+        runtime => runtime.listSessions(contextInfo)
+      );
+      await context.session.prompt({
+        sessionID: invocation.sessionID,
+        text: buildPlanningSessionListResponse(sessions),
+        delivery: 'steer',
+      });
       return;
     }
   }

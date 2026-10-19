@@ -1,6 +1,7 @@
 import type { InstructionInventory } from '../../domain/instructions/instruction.js';
-import type { SidebarModel } from '../../domain/sidebar/sidebar-model.js';
+import type { PlanningSession } from '../../domain/planning/planning-session.js';
 import type { PlanningState } from '../../domain/planning/planning-session.js';
+import type { SidebarModel } from '../../domain/sidebar/sidebar-model.js';
 import { buildSidebarModel } from './build-sidebar-model.js';
 import {
   classifySidebarLoadFailure,
@@ -22,9 +23,11 @@ export type SidebarLoadResult =
 export async function loadSidebarModel(input: {
   readonly loadInventory: () => Promise<InstructionInventory>;
   readonly loadPlanningState: () => Promise<PlanningState | null>;
+  readonly loadSessions: () => Promise<readonly PlanningSession[]>;
 }): Promise<SidebarLoadResult> {
   let inventory: InstructionInventory;
   let planningState: PlanningState | null;
+  let sessions: readonly PlanningSession[];
 
   try {
     inventory = await input.loadInventory();
@@ -44,8 +47,14 @@ export async function loadSidebarModel(input: {
     };
   }
 
+  try {
+    sessions = await input.loadSessions();
+  } catch {
+    sessions = [];
+  }
+
   return {
     ok: true,
-    model: buildSidebarModel(inventory, planningState),
+    model: buildSidebarModel(inventory, planningState, sessions),
   };
 }

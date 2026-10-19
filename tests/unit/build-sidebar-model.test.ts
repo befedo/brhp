@@ -62,6 +62,7 @@ describe('buildSidebarModel', () => {
           reason: 'disabled',
         },
       ],
+      sessions: [],
       planning: {
         active: false,
       },

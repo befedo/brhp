@@ -113,6 +113,7 @@ After BRHP is published to npm, replace the `file://` entries with `"brhp"` in b
 Common commands:
 
 - `/brhp` or `/brhp status` to inspect the active planning session
+- `/brhp list` to list all planning sessions for the current worktree, showing session id, status, problem, and convergence
 - `/brhp history` to inspect the newest 25 planner events for the active session
 - `/brhp inspect` to inspect bounded graph, frontier, validation, node, edge, and activity detail for the active session
 - `/brhp plan <problem statement>` to start a new planning session

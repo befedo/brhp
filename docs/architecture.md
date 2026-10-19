@@ -125,14 +125,14 @@ Entrypoints are intentionally thin and use default exports only to match observe
 ## Slash command flow
 
 1. `ctx.command.transform` registers the `brhp` command.
-2. `command.execute` parses `/brhp` into `status`, `plan`, `resume`, `history`, or `inspect`.
-3. Read-only commands load the active planner state or event history and render bounded operator projections, surfaced through `ctx.session.prompt`.
-4. Mutating slash commands open planner runtime access for the operation and use the local libsql store to create or resume state for the current OpenCode chat.
-5. The plugin writes a text response with planning state, instruction details, and stack-free runtime diagnostics where supported.
+2. `command.execute` parses `/brhp` into `status`, `plan`, `resume`, `history`, `inspect`, or `list`.
+3. Read-only commands (`status`, `history`, `inspect`, `list`) load the active planner state, event history, or the full session list and render bounded operator projections, surfaced through `ctx.session.prompt`.
+4. Mutating slash commands (`plan`, `resume`) open planner runtime access for the operation and use the local libsql store to create or resume state for the current OpenCode chat; they run silently and surface results through planner tools and the TUI sidebar.
+5. The plugin writes a text response with planning state, instruction details, session list, and stack-free runtime diagnostics where supported.
 
 ## TUI flow
 
 1. `src/tui/index.tsx` registers the `brhp` TUI plugin via `Plugin.define({ id, setup })`.
 2. `setup(context)` claims the `sidebar.content` slot via `context.ui.slot({ append: 'sidebar.content', render })`, which renders `SidebarContent` for the current session; it also registers the `brhp.refresh` command-palette action via `context.keymap.layer` and shows toasts through `context.ui.toast.show`.
-3. The sidebar loads the instruction inventory and the active planning session for the current OpenCode chat and re-renders on the in-process refresh event emitted by the `brhp.refresh` action.
+3. The sidebar loads the instruction inventory, the active planning session, and the list of available sessions for the current worktree; it re-renders on the in-process refresh event emitted by the `brhp.refresh` action. The session list surfaces every persisted session id, status, and problem so operators can find the right `sessionID` to pass to `/brhp resume`.
 4. The cleanup function returned by `setup` disposes the slot claim and closes the TUI's planner runtime owner.

@@ -28,7 +28,19 @@ export interface SidebarModel {
   readonly skippedCount: number;
   readonly instructions: readonly SidebarInstructionItem[];
   readonly skippedFiles: readonly SidebarSkippedInstructionItem[];
+  readonly sessions: readonly SidebarSessionItem[];
   readonly planning?: SidebarPlanningSummary;
+}
+
+export interface SidebarSessionItem {
+  readonly id: string;
+  readonly shortId: string;
+  readonly status: PlanningSessionStatus;
+  readonly problem: string;
+  readonly converged: boolean;
+  readonly blockingFindings: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface SidebarPlanningSummary {

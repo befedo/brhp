@@ -27,6 +27,7 @@ describe('loadSidebarModel', () => {
         loadPlanningState: async () => {
           throw new Error('planning should not run');
         },
+        loadSessions: async () => [],
       })
     ).resolves.toEqual({
       ok: false,
@@ -44,6 +45,7 @@ describe('loadSidebarModel', () => {
         loadPlanningState: async () => {
           throw new Error('planning failed');
         },
+        loadSessions: async () => [],
       })
     ).resolves.toEqual({
       ok: false,
@@ -58,6 +60,7 @@ describe('loadSidebarModel', () => {
     const result = await loadSidebarModel({
       loadInventory: async () => baseInventory,
       loadPlanningState: async () => null,
+      loadSessions: async () => [],
     });
 
     expect(result).toEqual({
@@ -72,6 +75,7 @@ describe('loadSidebarModel', () => {
         skippedCount: 0,
         instructions: [],
         skippedFiles: [],
+        sessions: [],
         planning: {
           active: false,
         },

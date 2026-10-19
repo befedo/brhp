@@ -10,7 +10,7 @@ describe('parseBrhpCommand', () => {
     });
   });
 
-  it('parses plan, resume, history, and inspect subcommands', () => {
+  it('parses plan, resume, history, inspect, and list subcommands', () => {
     expect(parseBrhpCommand('plan formalize the planner')).toEqual({
       ok: true,
       command: {
@@ -40,6 +40,13 @@ describe('parseBrhpCommand', () => {
         kind: 'inspect',
       },
     });
+
+    expect(parseBrhpCommand('list')).toEqual({
+      ok: true,
+      command: {
+        kind: 'list',
+      },
+    });
   });
 
   it('rejects invalid invocations with user-facing messages', () => {
@@ -65,7 +72,7 @@ describe('parseBrhpCommand', () => {
 
     expect(parseBrhpCommand('unknown')).toEqual({
       ok: false,
-      message: "Unknown BRHP subcommand 'unknown'. Supported: status, plan, resume, history, inspect.",
+      message: "Unknown BRHP subcommand 'unknown'. Supported: status, plan, resume, history, inspect, list.",
     });
   });
 });

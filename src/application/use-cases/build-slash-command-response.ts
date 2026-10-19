@@ -5,6 +5,7 @@ import {
 } from '../../domain/slash-command/brhp-command.js';
 import type { PlannerRuntimeMutation } from '../services/planner-runtime.js';
 import type { PlanningState } from '../../domain/planning/planning-session.js';
+import type { PlanningSession } from '../../domain/planning/planning-session.js';
 import type { BrhpRuntimeDiagnostic } from './classify-runtime-diagnostic.js';
 import { buildPlanningSessionSummary } from './build-planning-session-summary.js';
 import { buildPlanningHistoryResponse } from './build-planning-history-response.js';
@@ -23,8 +24,13 @@ export function buildSlashCommandResponse(
       readonly limit: number;
       readonly events: readonly import('../../domain/planning/planning-event.js').PlanningEvent[];
     };
+    readonly listSessions?: readonly PlanningSession[];
   }
 ): string {
+  if (options?.listSessions !== undefined) {
+    return buildPlanningSessionListResponse(options.listSessions);
+  }
+
   if (options?.history !== undefined) {
     return buildPlanningHistoryResponse(options.history);
   }
@@ -155,4 +161,30 @@ function renderMutation(mutation: PlannerRuntimeMutation): string[] {
     case 'resume-not-found':
       return [`- Session ${mutation.sessionId} was not found in this worktree`];
   }
+}
+
+export function buildPlanningSessionListResponse(
+  sessions: readonly PlanningSession[]
+): string {
+  const header = sessions.length === 0
+    ? ['# BRHP Sessions', '', 'No planning sessions found for this worktree.']
+    : [
+        '# BRHP Sessions',
+        '',
+        `${sessions.length} session(s) found:`,
+        '',
+        ...sessions.flatMap(session => [
+          `• ${session.id.slice(0, 8)}…  ${session.status}`,
+          `  Problem: ${session.initialProblem}`,
+          `  Converged: ${session.summary.converged ? 'yes' : 'no'}  Blocking: ${session.summary.blockingFindings}`,
+          `  Created: ${session.createdAt}  Updated: ${session.updatedAt}`,
+          '',
+        ]),
+      ];
+
+  return [
+    ...header,
+    '',
+    'Use `/brhp resume <session id>` to continue a session.',
+  ].join('\n');
 }
