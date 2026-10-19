@@ -51,16 +51,19 @@ The libsql adapter layer also owns:
 ### Composition roots
 
 - `src/composition/create-server-plugin.ts`
-- `src/composition/create-tui-plugin.ts`
+- `src/composition/create-tui-plugin.tsx`
 
-These files wire adapters to use cases and map them onto the OpenCode server and TUI plugin APIs.
+These files wire adapters to use cases and map them onto the OpenCode v2 plugin APIs.
 
-For the planner runtime specifically:
+- `src/index.ts` default-exports `Plugin.define({ id, setup })` from `@opencode/plugin` (v2 server plugin). `setup(context)` registers the seven BRHP planner tools via `ctx.tool.transform`, the `/brhp` slash command via `ctx.command.transform`, and the injected system prompt section via `ctx.session.hook('context')`, then returns a cleanup function that disposes every registration.
+- `src/tui/index.tsx` default-exports `Plugin.define({ id, setup })` from `@opencode/plugin/tui` (v2 TUI plugin). `setup(context)` claims the `sidebar.content` slot via `context.ui.slot`, registers the `brhp.refresh` palette command via `context.keymap.layer`, owns a longer-lived planner runtime through `src/composition/create-planner-runtime-owner.ts`, and returns a cleanup function that disposes the slot claim and the planner runtime owner.
 
-- `src/composition/create-planner-runtime.ts` creates planner runtimes on demand for a worktree
-- the server hook opens planner runtime access per operation and closes it after the operation completes
-- the TUI owns a longer-lived planner runtime through `src/composition/create-planner-runtime-owner.ts`
-- plugin lifecycle disposal closes the TUI runtime handle explicitly
+### Entry modules
+
+- `src/index.ts`
+- `src/tui/index.tsx`
+
+Entrypoints are intentionally thin and use default exports only to match observed OpenCode loader behavior. Each default-exports a v2 `Plugin.define({ id, setup })` definition.
 
 ## BRHP formal core
 
@@ -117,19 +120,19 @@ Entrypoints are intentionally thin and use default exports only to match observe
 3. Parse optional YAML frontmatter.
 4. Filter disabled or empty files.
 5. Merge global instructions before project instructions.
-6. Inject the rendered instruction section through `experimental.chat.system.transform`.
+6. Inject the rendered instruction section through `ctx.session.hook('context')`, pushing a `SystemPart` onto `event.system`.
 
 ## Slash command flow
 
-1. `config` registers the `brhp` command.
-2. `command.execute.before` parses `/brhp` into `status`, `plan`, `resume`, `history`, or `inspect`.
-3. Read-only commands load the active planner state or event history and render bounded operator projections.
+1. `ctx.command.transform` registers the `brhp` command.
+2. `command.execute` parses `/brhp` into `status`, `plan`, `resume`, `history`, or `inspect`.
+3. Read-only commands load the active planner state or event history and render bounded operator projections, surfaced through `ctx.session.prompt`.
 4. Mutating slash commands open planner runtime access for the operation and use the local libsql store to create or resume state for the current OpenCode chat.
-5. The plugin clears the output parts and writes a text response with planning state, instruction details, and stack-free runtime diagnostics where supported.
+5. The plugin writes a text response with planning state, instruction details, and stack-free runtime diagnostics where supported.
 
 ## TUI flow
 
-1. `src/tui/index.tsx` registers `sidebar_content`.
-2. The sidebar loads instruction inventory and the active planning session for the current OpenCode chat.
-3. A command-palette action emits an in-process refresh event and reloads the sidebar view.
-4. Plugin lifecycle disposal closes the shared planner runtime for the TUI instance.
+1. `src/tui/index.tsx` registers the `brhp` TUI plugin via `Plugin.define({ id, setup })`.
+2. `setup(context)` claims the `sidebar.content` slot via `context.ui.slot({ append: 'sidebar.content', render })`, which renders `SidebarContent` for the current session; it also registers the `brhp.refresh` command-palette action via `context.keymap.layer` and shows toasts through `context.ui.toast.show`.
+3. The sidebar loads the instruction inventory and the active planning session for the current OpenCode chat and re-renders on the in-process refresh event emitted by the `brhp.refresh` action.
+4. The cleanup function returned by `setup` disposes the slot claim and closes the TUI's planner runtime owner.

@@ -1,11 +1,11 @@
 /** @jsxImportSource @opentui/solid */
+import { Plugin } from '@opencode/plugin/tui';
+
 import { createTuiPlugin } from '../composition/create-tui-plugin.js';
 
 const id = 'brhp' as const;
 
-const tui = createTuiPlugin();
-
-export default {
+export default Plugin.define({
   id,
-  tui,
-};
+  setup: createTuiPlugin(),
+});

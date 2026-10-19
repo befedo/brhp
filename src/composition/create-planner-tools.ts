@@ -1,30 +1,49 @@
-import { tool } from '@opencode-ai/plugin/tool';
+import type { ToolContext } from '@opencode/plugin/promise/tool';
 
 import type { PlannerRuntime } from '../application/services/planner-runtime.js';
 import { BRHP_TOOL_IDS } from '../domain/planning/planner-tool.js';
+import type { PlanNodeCategory, PlanNodeStatus } from '../domain/planning/plan-node.js';
+import type { ValidationClauseKind, ValidationClauseStatus } from '../domain/planning/validation.js';
 
-type PlannerToolMap = Record<string, ReturnType<typeof tool>>;
+type PlannerToolDefinition = {
+  readonly name: string;
+  readonly description: string;
+  readonly input: any;
+  readonly progressTitle: (input: unknown) => string;
+  readonly execute: (
+    input: unknown,
+    context: ToolContext
+  ) => Promise<{ readonly content: string }>;
+};
+
+type WithRuntime = <Result>(
+  sessionID: string,
+  worktreePath: string,
+  execute: (runtime: PlannerRuntime) => Promise<Result>
+) => Promise<Result>;
+
+type ResolveProjectPath = (sessionID: string) => Promise<string>;
 
 export function createPlannerTools(
-  withRuntime: <Result>(
-    sessionID: string,
-    worktreePath: string,
-    execute: (runtime: PlannerRuntime) => Promise<Result>
-  ) => Promise<Result>,
-  resolveProjectPath: (sessionID: string, context: { directory: string; worktree: string }) => Promise<string>
-): PlannerToolMap {
-  return {
-    [BRHP_TOOL_IDS.getActivePlan]: tool({
+  withRuntime: WithRuntime,
+  resolveProjectPath: ResolveProjectPath
+): readonly PlannerToolDefinition[] {
+  return [
+    {
+      name: BRHP_TOOL_IDS.getActivePlan,
       description:
         'Read the authoritative active BRHP planning session for the current OpenCode chat before making planner mutations.',
-      args: {},
-      async execute(_args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      input: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      progressTitle: () => 'Read active BRHP plan',
+      execute: async (_input, context) => {
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: 'Read active BRHP plan',
-          metadata: {
-            tool: BRHP_TOOL_IDS.getActivePlan,
-          },
+          metadata: { tool: BRHP_TOOL_IDS.getActivePlan },
         });
 
         const state = await withRuntime(
@@ -37,40 +56,69 @@ export function createPlannerTools(
             })
         );
 
-        return JSON.stringify(
-          state ?? {
-            active: false,
-            message: 'No active BRHP planning session exists for this OpenCode chat.',
-          },
-          null,
-          2
-        );
+        return {
+          content: JSON.stringify(
+            state ?? {
+              active: false,
+              message: 'No active BRHP planning session exists for this OpenCode chat.',
+            },
+            null,
+            2
+          ),
+        };
       },
-    }),
-    [BRHP_TOOL_IDS.decomposeNode]: tool({
+    },
+    {
+      name: BRHP_TOOL_IDS.decomposeNode,
       description:
         'Decompose one node in the active BRHP planning session into child nodes and refresh the frontier. Read the active plan first.',
-      args: {
-        nodeId: tool.schema.string().min(1),
-        children: tool.schema
-          .array(
-            tool.schema.object({
-              title: tool.schema.string().min(1),
-              problemStatement: tool.schema.string().min(1),
-              category: tool.schema.enum([
-                'dependent',
-                'isolated',
-                'parallelizable',
-                'cross-cutting',
-              ]),
-              rationale: tool.schema.string().min(1).optional(),
-            })
-          )
-          .min(1),
+      input: {
+        type: 'object',
+        properties: {
+          nodeId: { type: 'string', minLength: 1 },
+          children: {
+            type: 'array',
+            minItems: 1,
+            items: {
+              type: 'object',
+              properties: {
+                title: { type: 'string', minLength: 1 },
+                problemStatement: { type: 'string', minLength: 1 },
+                category: {
+                  type: 'string',
+                  enum: [
+                    'dependent',
+                    'isolated',
+                    'parallelizable',
+                    'cross-cutting',
+                  ],
+                },
+                rationale: { type: 'string', minLength: 1 },
+              },
+              required: ['title', 'problemStatement', 'category'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['nodeId', 'children'],
+        additionalProperties: false,
       },
-      async execute(args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      progressTitle: input => {
+        const args = input as { readonly nodeId: string; readonly children: unknown[] };
+        return `Decompose BRHP node ${args.nodeId}`;
+      },
+      execute: async (input, context) => {
+        const args = input as {
+          readonly nodeId: string;
+          readonly children: readonly {
+            readonly title: string;
+            readonly problemStatement: string;
+            readonly category: unknown;
+            readonly rationale?: string;
+          }[];
+        };
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: `Decompose BRHP node ${args.nodeId}`,
           metadata: {
             tool: BRHP_TOOL_IDS.decomposeNode,
@@ -93,36 +141,67 @@ export function createPlannerTools(
                 children: args.children.map(child => ({
                   title: child.title,
                   problemStatement: child.problemStatement,
-                  category: child.category,
+                  category: child.category as PlanNodeCategory,
                   ...(child.rationale ? { rationale: child.rationale } : {}),
                 })),
               }
             )
         );
 
-        return JSON.stringify(mutation, null, 2);
+        return { content: JSON.stringify(mutation, null, 2) };
       },
-    }),
-    [BRHP_TOOL_IDS.validateActiveScope]: tool({
+    },
+    {
+      name: BRHP_TOOL_IDS.validateActiveScope,
       description:
         'Persist a deterministic validation verdict for the active BRHP scope in the current OpenCode chat. Read the active plan first.',
-      args: {
-        clauses: tool.schema
-          .array(
-            tool.schema.object({
-              id: tool.schema.string().min(1).optional(),
-              kind: tool.schema.enum(['schema', 'structure', 'dependency', 'conflict', 'coverage']),
-              blocking: tool.schema.boolean(),
-              description: tool.schema.string().min(1),
-              status: tool.schema.enum(['pending', 'passed', 'failed', 'skipped']),
-              message: tool.schema.string().min(1).optional(),
-            })
-          )
-          .min(1),
+      input: {
+        type: 'object',
+        properties: {
+          clauses: {
+            type: 'array',
+            minItems: 1,
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', minLength: 1 },
+                kind: {
+                  type: 'string',
+                  enum: ['schema', 'structure', 'dependency', 'conflict', 'coverage'],
+                },
+                blocking: { type: 'boolean' },
+                description: { type: 'string', minLength: 1 },
+                status: {
+                  type: 'string',
+                  enum: ['pending', 'passed', 'failed', 'skipped'],
+                },
+                message: { type: 'string', minLength: 1 },
+              },
+              required: ['kind', 'blocking', 'description', 'status'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['clauses'],
+        additionalProperties: false,
       },
-      async execute(args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      progressTitle: input => {
+        const args = input as { readonly clauses: unknown[] };
+        return 'Validate BRHP active scope';
+      },
+      execute: async (input, context) => {
+        const args = input as {
+          readonly clauses: readonly {
+            readonly id?: string;
+            readonly kind: unknown;
+            readonly blocking: boolean;
+            readonly description: string;
+            readonly status: unknown;
+            readonly message?: string;
+          }[];
+        };
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: 'Validate BRHP active scope',
           metadata: {
             tool: BRHP_TOOL_IDS.validateActiveScope,
@@ -142,29 +221,40 @@ export function createPlannerTools(
               {
                 clauses: args.clauses.map(clause => ({
                   ...(clause.id ? { id: clause.id } : {}),
-                  kind: clause.kind,
+                  kind: clause.kind as ValidationClauseKind,
                   blocking: clause.blocking,
                   description: clause.description,
-                  status: clause.status,
+                  status: clause.status as ValidationClauseStatus,
                   ...(clause.message ? { message: clause.message } : {}),
                 })),
               }
             )
         );
 
-        return JSON.stringify(mutation, null, 2);
+        return { content: JSON.stringify(mutation, null, 2) };
       },
-    }),
-    [BRHP_TOOL_IDS.completeLeaf]: tool({
+    },
+    {
+      name: BRHP_TOOL_IDS.completeLeaf,
       description:
         'Mark a leaf node in the active BRHP planning session as complete with a result summary. Read the active plan first.',
-      args: {
-        nodeId: tool.schema.string().min(1),
-        completionSummary: tool.schema.string().min(1),
+      input: {
+        type: 'object',
+        properties: {
+          nodeId: { type: 'string', minLength: 1 },
+          completionSummary: { type: 'string', minLength: 1 },
+        },
+        required: ['nodeId', 'completionSummary'],
+        additionalProperties: false,
       },
-      async execute(args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      progressTitle: input => {
+        const args = input as { readonly nodeId: string };
+        return `Complete BRHP leaf node ${args.nodeId}`;
+      },
+      execute: async (input, context) => {
+        const args = input as { readonly nodeId: string; readonly completionSummary: string };
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: `Complete BRHP leaf node ${args.nodeId}`,
           metadata: {
             tool: BRHP_TOOL_IDS.completeLeaf,
@@ -186,35 +276,72 @@ export function createPlannerTools(
             )
         );
 
-        return JSON.stringify(mutation, null, 2);
+        return { content: JSON.stringify(mutation, null, 2) };
       },
-    }),
-    [BRHP_TOOL_IDS.queryNodes]: tool({
+    },
+    {
+      name: BRHP_TOOL_IDS.queryNodes,
       description:
         'Filtered, paginated, read-only query over BRHP planner nodes in the active (or a specified) session. Supports scopeId, parentNodeId, status, category, titleContains, and depth filters with deterministic ordering (title/status/depth). Not capped to a fixed frontier size.',
-      args: {
-        sessionId: tool.schema.string().min(1).optional(),
-        scopeId: tool.schema.string().min(1).optional(),
-        parentNodeId: tool.schema.string().min(1).optional(),
-        status: tool.schema
-          .enum(['proposed', 'active', 'decomposed', 'leaf', 'pruned', 'blocked'])
-          .optional(),
-        category: tool.schema
-          .enum(['dependent', 'isolated', 'parallelizable', 'cross-cutting'])
-          .optional(),
-        titleContains: tool.schema.string().min(1).optional(),
-        depth: tool.schema.number().int().min(0).optional(),
-        limit: tool.schema.number().int().min(1).max(200).optional(),
-        offset: tool.schema.number().int().min(0).optional(),
+      input: {
+        type: 'object',
+        properties: {
+          sessionId: { type: 'string', minLength: 1 },
+          scopeId: { type: 'string', minLength: 1 },
+          parentNodeId: { type: 'string', minLength: 1 },
+          status: {
+            type: 'string',
+            enum: [
+              'proposed',
+              'active',
+              'decomposed',
+              'leaf',
+              'pruned',
+              'blocked',
+            ],
+          },
+          category: {
+            type: 'string',
+            enum: [
+              'dependent',
+              'isolated',
+              'parallelizable',
+              'cross-cutting',
+            ],
+          },
+          titleContains: { type: 'string', minLength: 1 },
+          depth: { type: 'integer', minimum: 0 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+          offset: { type: 'integer', minimum: 0 },
+        },
+        additionalProperties: false,
       },
-      async execute(args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      progressTitle: input => {
+        const args = input as {
+          readonly titleContains?: string;
+          readonly status?: string;
+        };
+        return 'Query BRHP planner nodes';
+      },
+      execute: async (input, context) => {
+        const args = input as {
+          readonly sessionId?: string;
+          readonly scopeId?: string;
+          readonly parentNodeId?: string;
+          readonly status?: unknown;
+          readonly category?: unknown;
+          readonly titleContains?: string;
+          readonly depth?: number;
+          readonly limit?: number;
+          readonly offset?: number;
+        };
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: 'Query BRHP planner nodes',
           metadata: {
             tool: BRHP_TOOL_IDS.queryNodes,
             ...(args.titleContains ? { titleContains: args.titleContains } : {}),
-            ...(args.status ? { status: args.status } : {}),
+            ...(args.status ? { status: String(args.status) } : {}),
           },
         });
 
@@ -231,8 +358,8 @@ export function createPlannerTools(
                 ...(args.sessionId ? { sessionId: args.sessionId } : {}),
                 ...(args.scopeId ? { scopeId: args.scopeId } : {}),
                 ...(args.parentNodeId ? { parentNodeId: args.parentNodeId } : {}),
-                ...(args.status ? { status: args.status } : {}),
-                ...(args.category ? { category: args.category } : {}),
+                ...(args.status !== undefined ? { status: args.status as PlanNodeStatus } : {}),
+                ...(args.category !== undefined ? { category: args.category as PlanNodeCategory } : {}),
                 ...(args.titleContains ? { titleContains: args.titleContains } : {}),
                 ...(args.depth !== undefined ? { depth: args.depth } : {}),
                 ...(args.limit !== undefined ? { limit: args.limit } : {}),
@@ -241,19 +368,30 @@ export function createPlannerTools(
             )
         );
 
-        return JSON.stringify(result, null, 2);
+        return { content: JSON.stringify(result, null, 2) };
       },
-    }),
-    [BRHP_TOOL_IDS.getNode]: tool({
+    },
+    {
+      name: BRHP_TOOL_IDS.getNode,
       description:
         'Read a single BRHP planner node by id, including its direct edges (incoming and outgoing). Read-only.',
-      args: {
-        id: tool.schema.string().min(1),
-        sessionId: tool.schema.string().min(1).optional(),
+      input: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          sessionId: { type: 'string', minLength: 1 },
+        },
+        required: ['id'],
+        additionalProperties: false,
       },
-      async execute(args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      progressTitle: input => {
+        const args = input as { readonly id: string };
+        return `Get BRHP node ${args.id}`;
+      },
+      execute: async (input, context) => {
+        const args = input as { readonly id: string; readonly sessionId?: string };
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: `Get BRHP node ${args.id}`,
           metadata: {
             tool: BRHP_TOOL_IDS.getNode,
@@ -275,27 +413,40 @@ export function createPlannerTools(
             )
         );
 
-        return JSON.stringify(
-          result ?? {
-            found: false,
-            message: `No BRHP planner node '${args.id}' was found.`,
-          },
-          null,
-          2
-        );
+        return {
+          content: JSON.stringify(
+            result ?? {
+              found: false,
+              message: `No BRHP planner node '${args.id}' was found.`,
+            },
+            null,
+            2
+          ),
+        };
       },
-    }),
-    [BRHP_TOOL_IDS.searchNodes]: tool({
+    },
+    {
+      name: BRHP_TOOL_IDS.searchNodes,
       description:
         'Ranked, read-only search over BRHP planner node titles and problem statements in the active (or a specified) session.',
-      args: {
-        query: tool.schema.string().min(1),
-        limit: tool.schema.number().int().min(1).max(200).optional(),
-        sessionId: tool.schema.string().min(1).optional(),
+      input: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', minLength: 1 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+          sessionId: { type: 'string', minLength: 1 },
+        },
+        required: ['query'],
+        additionalProperties: false,
       },
-      async execute(args, context) {
-        const projectPath = await resolveProjectPath(context.sessionID, context);
-        context.metadata({
+      progressTitle: input => {
+        const args = input as { readonly query: string };
+        return `Search BRHP planner nodes: ${args.query}`;
+      },
+      execute: async (input, context) => {
+        const args = input as { readonly query: string; readonly limit?: number; readonly sessionId?: string };
+        const projectPath = await resolveProjectPath(context.sessionID);
+        await context.progress({
           title: `Search BRHP planner nodes: ${args.query}`,
           metadata: {
             tool: BRHP_TOOL_IDS.searchNodes,
@@ -318,8 +469,8 @@ export function createPlannerTools(
             )
         );
 
-        return JSON.stringify({ nodes }, null, 2);
+        return { content: JSON.stringify({ nodes }, null, 2) };
       },
-    }),
-  };
+    },
+  ];
 }

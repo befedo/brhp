@@ -1,5 +1,14 @@
-import type { PluginInput } from '@opencode-ai/plugin';
 import path from 'node:path';
+
+type ServerProjectPathInput = {
+  readonly project: { readonly worktree: string };
+  readonly worktree: string;
+  readonly directory: string;
+};
+
+export function resolveProjectWorktreePath(input: ServerProjectPathInput): string {
+  return resolveRuntimeProjectPath(input.project.worktree, input.worktree, input.directory);
+}
 
 type ServerSessionLookupClient = {
   readonly path: {
@@ -60,13 +69,9 @@ type ServerSessionLookupClient = {
   };
 };
 
-export function resolveProjectWorktreePath(input: Pick<PluginInput, 'project' | 'worktree' | 'directory'>): string {
-  return resolveRuntimeProjectPath(input.project.worktree, input.worktree, input.directory);
-}
-
 export interface ServerProjectPathResolverInput {
   readonly client: Partial<ServerSessionLookupClient>;
-  readonly project: Pick<PluginInput['project'], 'worktree'>;
+  readonly project: { readonly worktree: string };
   readonly worktree: string;
   readonly directory: string;
 }

@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin } from '@opencode-ai/plugin/tui';
+import type { Context } from '@opencode/plugin/tui/context';
 
 import {
   loadSidebarModel,
@@ -17,12 +17,11 @@ export interface CreateTuiPluginOptions {
   readonly createOwner?: (worktreePath: string) => PlannerRuntimeOwner;
 }
 
-export const createTuiPlugin = (options: CreateTuiPluginOptions = {}): TuiPlugin => {
-  return async api => {
-    const projectDirectory = resolveRuntimeProjectPath(
-      api.state.path.worktree,
-      api.state.path.directory
-    );
+export const createTuiPlugin =
+  (options: CreateTuiPluginOptions = {}) =>
+  async (context: Context): Promise<() => void> => {
+    const directory = context.location?.directory ?? process.cwd();
+    const projectDirectory = resolveRuntimeProjectPath(directory);
     const owner =
       options.createOwner?.(projectDirectory) ??
       createPlannerRuntimeOwner({
@@ -40,61 +39,48 @@ export const createTuiPlugin = (options: CreateTuiPluginOptions = {}): TuiPlugin
       });
     };
 
-    let unregisterSlots: unknown;
-    let unregisterCommand: unknown;
+    let unregisterSlot: (() => void) | undefined;
 
-    try {
-      unregisterSlots = api.slots.register({
-        order: 300,
-        slots: {
-          sidebar_content: (context, props) => (
-            <SidebarContent
-              api={api}
-              theme={context.theme}
-              sessionId={props.session_id}
-              loadModel={loadModel}
-            />
-          ),
-        },
-      });
+    const unregisterSlotCleanup = context.ui.slot({
+      append: 'sidebar.content',
+      render: ({ sessionID }) => (
+        <SidebarContent
+          theme={context.theme}
+          sessionId={sessionID}
+          loadModel={loadModel}
+        />
+      ),
+    });
+    unregisterSlot = unregisterSlotCleanup;
 
-      unregisterCommand = api.command.register(() => [
+    context.keymap.layer(() => ({
+      mode: 'global',
+      commands: [
         {
+          id: 'brhp.refresh',
           title: 'Refresh BRHP sidebar',
-          value: 'brhp.refresh',
           description: 'Reload instruction inventory from disk',
-          category: 'Plugins',
-          onSelect: () => {
+          group: 'Plugins',
+          palette: true,
+          slash: { name: 'brhp.refresh' },
+          run: () => {
             emitSidebarRefresh();
-            api.ui.toast({
+            context.ui.toast.show({
               variant: 'info',
               message: 'BRHP sidebar refresh requested',
             });
           },
         },
-      ]);
+      ],
+    }));
 
-      api.lifecycle.onDispose(() => {
-        void owner.dispose().catch(() => {
-          api.ui.toast({
-            variant: 'warning',
-            message: 'BRHP planner runtime failed to close cleanly',
-          });
+    return () => {
+      unregisterSlot?.();
+      void owner.dispose().catch(() => {
+        context.ui.toast.show({
+          variant: 'warning',
+          message: 'BRHP planner runtime failed to close cleanly',
         });
-        maybeDispose(unregisterCommand);
-        maybeDispose(unregisterSlots);
       });
-    } catch (error) {
-      maybeDispose(unregisterCommand);
-      maybeDispose(unregisterSlots);
-      await owner.dispose();
-      throw error;
-    }
+    };
   };
-};
-
-function maybeDispose(registration: unknown): void {
-  if (typeof registration === 'function') {
-    registration();
-  }
-}

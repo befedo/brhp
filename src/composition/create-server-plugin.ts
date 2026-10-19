@@ -1,23 +1,18 @@
-import path from 'node:path';
-
-import type { Hooks, PluginInput } from '@opencode-ai/plugin';
+import type { Plugin } from '@opencode/plugin';
+import type { CommandInvocation } from '@opencode/plugin/promise/command';
 
 import { parseBrhpCommand } from '../application/use-cases/parse-brhp-command.js';
 import { buildSlashCommandResponse } from '../application/use-cases/build-slash-command-response.js';
-import { classifyRuntimeDiagnostic } from '../application/use-cases/classify-runtime-diagnostic.js';
-import type { BrhpRuntimeDiagnostic } from '../application/use-cases/classify-runtime-diagnostic.js';
-import { buildPlanningInspectResponse } from '../application/use-cases/build-planning-inspect-response.js';
 import { buildSystemPromptSection } from '../application/use-cases/build-system-prompt-section.js';
-import type { PlannerRuntime } from '../application/services/planner-runtime.js';
-import type { PlannerRuntimeMutation } from '../application/services/planner-runtime.js';
-import type { InstructionInventory } from '../domain/instructions/instruction.js';
+import { buildPlanningInspectResponse } from '../application/use-cases/build-planning-inspect-response.js';
 import type { PlanningState } from '../domain/planning/planning-session.js';
+import type { PlannerConfig } from '../domain/planning/planner-config.js';
 import { PLANNING_HISTORY_EVENTS_LIMIT } from '../domain/planning/planning-event.js';
+import type { PlannerRuntime } from '../application/services/planner-runtime.js';
 import { withPlannerRuntimeForWorktree } from './create-planner-runtime.js';
 import { createPlannerTools } from './create-planner-tools.js';
 import { createInstructionInventoryLoader } from './create-instruction-inventory-loader.js';
 import {
-  resolveServerProjectWorktreePath,
   resolveServerProjectWorktreePathWithoutSession,
 } from './resolve-project-worktree-path.js';
 import {
@@ -25,298 +20,243 @@ import {
   BRHP_COMMAND_NAME,
 } from '../domain/slash-command/brhp-command.js';
 import { loadPlannerConfig } from '../application/use-cases/load-planner-config.js';
-import type { PlannerConfig } from '../domain/planning/planner-config.js';
 
-export interface ServerPlannerRuntimeAccess {
+interface ServerPlannerRuntimeAccess {
   withRuntime<Result>(
     sessionID: string,
-    worktreePath: string,
     execute: (runtime: PlannerRuntime) => Promise<Result>
   ): Promise<Result>;
 }
 
-export async function createServerPluginHooks(
-  input: PluginInput
-): Promise<Hooks> {
-  const config = await loadConfig(input);
+export async function createServerPlugin(
+  context: Plugin.Context
+): Promise<() => Promise<void>> {
+  const directory = context.location.directory;
+  const worktree = context.location.project.canonical;
+  const config = await loadConfig(directory);
 
-  return createServerPluginHooksWithRuntimeAccess(input, {
-    async withRuntime(_sessionID, worktreePath, execute) {
-      return withPlannerRuntimeForWorktree(worktreePath, execute, config);
+  const runtimeAccess: ServerPlannerRuntimeAccess = {
+    async withRuntime(_sessionID, execute) {
+      return withPlannerRuntimeForWorktree(worktree, execute, config);
     },
-  }, config);
-}
-
-export async function createServerPluginHooksWithRuntimeAccess(
-  input: PluginInput,
-  runtimeAccess: ServerPlannerRuntimeAccess,
-  config?: PlannerConfig
-): Promise<Hooks> {
-  const resolveProjectDirectory = async (
-    sessionID: string,
-    runtimeCandidates?: {
-      readonly worktree?: string | null;
-      readonly directory?: string | null;
-    }
-  ) => {
-    return resolveServerProjectWorktreePath(
-      input,
-      sessionID,
-      runtimeCandidates
-    );
   };
 
-  return {
-    tool: createPlannerTools(
-      (sessionID, worktreePath, execute) => runtimeAccess.withRuntime(sessionID, worktreePath, execute),
-      (sessionID, context) =>
-        resolveProjectDirectory(sessionID, {
-          worktree: context.worktree,
-          directory: context.directory,
-        })
-    ),
-    config: async opencodeConfig => {
-      opencodeConfig.command ??= {};
-      opencodeConfig.command[BRHP_COMMAND_NAME] = {
-        template: '',
-        description: BRHP_COMMAND_DESCRIPTION,
-      };
-    },
-    'command.execute.before': async (commandInput, output) => {
-      if (commandInput.command !== BRHP_COMMAND_NAME) {
-        return;
+  const resolveProjectPath = async (sessionID: string): Promise<string> => directory;
+
+  const disposers: Array<() => Promise<void>> = [];
+
+  const toolDefinitions = createPlannerTools(
+    (sessionID, _worktreePath, execute) =>
+      runtimeAccess.withRuntime(sessionID, execute),
+    resolveProjectPath
+  );
+
+  for (const definition of toolDefinitions) {
+    const registration = await context.tool.transform(editor => {
+      editor.add({
+        name: definition.name,
+        description: definition.description,
+        input: definition.input,
+        execute: async (input, toolContext) => {
+          return definition.execute(input, toolContext);
+        },
+      });
+    });
+    disposers.push(() => registration.dispose());
+  }
+
+  const commandRegistration = await context.command.transform(editor => {
+    editor.add({
+      name: BRHP_COMMAND_NAME,
+      description: BRHP_COMMAND_DESCRIPTION,
+      execute: async invocation => {
+        await handleBrhpCommand(
+          invocation,
+          runtimeAccess,
+          directory,
+          worktree,
+          config,
+          context
+        );
+      },
+    });
+  });
+  disposers.push(() => commandRegistration.dispose());
+
+  const systemPromptRegistration = await context.session.hook(
+    'context',
+    async event => {
+      const inventory = await createInstructionInventoryLoader(directory)();
+      let planningState: PlanningState | null = null;
+      try {
+        planningState = await runtimeAccess.withRuntime(event.sessionID, runtime =>
+          runtime.getActive({
+            worktreePath: worktree,
+            opencodeSessionId: event.sessionID,
+          })
+        );
+      } catch {
+        planningState = null;
       }
-      const parsed = parseBrhpCommand(commandInput.arguments);
-
-      if (!parsed.ok) {
-        output.parts.length = 0;
-        output.parts.push({
-          type: 'text',
-          text: parsed.message,
-        } as (typeof output.parts)[number]);
-        return;
-      }
-
-      const projectDirectory = await resolveProjectDirectory(commandInput.sessionID);
-      const context = {
-        worktreePath: projectDirectory,
-        opencodeSessionId: commandInput.sessionID,
-      };
-      let mutation: PlannerRuntimeMutation = { kind: 'none' };
-
-      switch (parsed.command.kind) {
-        case 'status':
-          await renderStatusResponse({
-            output,
-            runtimeAccess,
-            sessionID: commandInput.sessionID,
-            projectDirectory,
-            context,
-            ...(config ? { config } : {}),
-          });
-          return;
-        case 'history': {
-          const history = await runtimeAccess.withRuntime(
-            commandInput.sessionID,
-            projectDirectory,
-            runtime => runtime.getActiveSessionHistory(context, PLANNING_HISTORY_EVENTS_LIMIT)
-          );
-
-          output.parts.length = 0;
-          output.parts.push({
-            type: 'text',
-            text: buildSlashCommandResponse(
-              {
-                directories: {
-                  global: 'n/a',
-                  project: projectDirectory,
-                },
-                instructions: [],
-                counts: {
-                  global: 0,
-                  project: 0,
-                  total: 0,
-                  skipped: 0,
-                },
-                skippedFiles: [],
-              },
-              {
-                history: {
-                  ...history,
-                  limit: PLANNING_HISTORY_EVENTS_LIMIT,
-                },
-              }
-            ),
-          } as (typeof output.parts)[number]);
-          return;
-        }
-        case 'inspect':
-          await renderInspectResponse({
-            output,
-            runtimeAccess,
-            sessionID: commandInput.sessionID,
-            projectDirectory,
-            context,
-          });
-          return;
-        case 'plan': {
-          const inventory = await createInstructionInventoryLoader(projectDirectory)();
-          const { problemStatement } = parsed.command;
-          mutation = await runtimeAccess.withRuntime(commandInput.sessionID, projectDirectory, runtime =>
-            runtime.create(context, inventory, problemStatement)
-          );
-          break;
-        }
-        case 'resume': {
-          const { sessionId } = parsed.command;
-          mutation = await runtimeAccess.withRuntime(commandInput.sessionID, projectDirectory, runtime =>
-            runtime.resume(context, sessionId)
-          );
-          break;
-        }
-      }
-
-      const inventory = await createInstructionInventoryLoader(projectDirectory)();
-
-      const activePlanningState = await runtimeAccess.withRuntime(
-        commandInput.sessionID,
-        projectDirectory,
-        runtime => runtime.getActive(context)
-      );
-
-      output.parts.length = 0;
-      output.parts.push({
-        type: 'text',
-        text: buildSlashCommandResponse(inventory, {
-          activePlanningState,
-          mutation,
-        }),
-      } as (typeof output.parts)[number]);
-    },
-    'experimental.chat.system.transform': async (transformInput, output) => {
-      const sessionID = transformInput.sessionID;
-      const projectDirectory = sessionID
-        ? await resolveProjectDirectory(sessionID)
-        : await resolveServerProjectWorktreePathWithoutSession(input);
-      const inventory = await createInstructionInventoryLoader(projectDirectory)();
-      const planningState = sessionID
-        ? await runtimeAccess.withRuntime(sessionID, projectDirectory, runtime =>
-            runtime.getActive({
-              worktreePath: projectDirectory,
-              opencodeSessionId: sessionID,
-            })
-          )
-        : null;
       const section = buildSystemPromptSection(inventory, planningState);
-
       if (section) {
-        output.system.push(section);
+        event.system.push({ type: 'text', text: section });
       }
-    },
+    }
+  );
+  disposers.push(() => systemPromptRegistration.dispose());
+
+  return async () => {
+    await Promise.all(disposers.map(dispose => dispose()));
   };
 }
 
-async function loadConfig(input: PluginInput): Promise<PlannerConfig> {
+async function loadConfig(projectDirectory: string): Promise<PlannerConfig> {
   try {
-    const projectDirectory = await resolveServerProjectWorktreePathWithoutSession(input);
-
     return await loadPlannerConfig(projectDirectory);
   } catch {
     return {};
   }
 }
 
-async function renderStatusResponse(input: {
-  readonly output: Parameters<NonNullable<Hooks['command.execute.before']>>[1];
-  readonly runtimeAccess: ServerPlannerRuntimeAccess;
-  readonly sessionID: string;
-  readonly projectDirectory: string;
-  readonly config?: PlannerConfig;
-  readonly context: {
-    readonly worktreePath: string;
-    readonly opencodeSessionId: string;
+async function handleBrhpCommand(
+  invocation: CommandInvocation,
+  runtimeAccess: ServerPlannerRuntimeAccess,
+  directory: string,
+  worktree: string,
+  config: PlannerConfig | undefined,
+  context: Plugin.Context
+): Promise<void> {
+  const argumentsText = invocation.prompt.text.replace(/^\/brhp\b\s*/u, '').trim();
+  const parsed = parseBrhpCommand(argumentsText);
+
+  if (!parsed.ok) {
+    await context.session.prompt({
+      sessionID: invocation.sessionID,
+      text: parsed.message,
+      delivery: 'steer',
+    });
+    return;
+  }
+
+  const projectDirectory = await resolveServerProjectWorktreePathWithoutSession(
+    {
+      client: {
+        path: {
+          get: async () => ({ directory, worktree }),
+        },
+      },
+      project: { worktree },
+      worktree,
+      directory,
+    }
+  );
+  const contextInfo = {
+    worktreePath: projectDirectory,
+    opencodeSessionId: invocation.sessionID,
   };
-}): Promise<void> {
-  const diagnostics: BrhpRuntimeDiagnostic[] = [];
-  let inventory: InstructionInventory;
 
-  try {
-    inventory = await createInstructionInventoryLoader(input.projectDirectory)();
-  } catch (cause) {
-    diagnostics.push(classifyRuntimeDiagnostic('instructions', cause));
-    inventory = createUnavailableInstructionInventory(input.projectDirectory);
+  switch (parsed.command.kind) {
+    case 'status': {
+      const diagnostics = await collectDiagnostics(
+        runtimeAccess,
+        invocation.sessionID,
+        projectDirectory,
+        contextInfo
+      );
+      const inventory = await createInstructionInventoryLoader(projectDirectory)();
+      await context.session.prompt({
+        sessionID: invocation.sessionID,
+        text: buildSlashCommandResponse(inventory, {
+          activePlanningState: null,
+          mutation: { kind: 'none' },
+          diagnostics,
+          ...(config ? { config } : {}),
+        }),
+        delivery: 'steer',
+      });
+      return;
+    }
+    case 'history': {
+      const history = await runtimeAccess.withRuntime(
+        invocation.sessionID,
+        runtime => runtime.getActiveSessionHistory(contextInfo, PLANNING_HISTORY_EVENTS_LIMIT)
+      );
+      await context.session.prompt({
+        sessionID: invocation.sessionID,
+        text: buildSlashCommandResponse(
+          {
+            directories: {
+              global: 'n/a',
+              project: projectDirectory,
+            },
+            instructions: [],
+            counts: { global: 0, project: 0, total: 0, skipped: 0 },
+            skippedFiles: [],
+          },
+          {
+            history: { ...history, limit: PLANNING_HISTORY_EVENTS_LIMIT },
+          }
+        ),
+        delivery: 'steer',
+      });
+      return;
+    }
+    case 'inspect': {
+      const state = await runtimeAccess.withRuntime(
+        invocation.sessionID,
+        runtime => runtime.getActive(contextInfo)
+      );
+      await context.session.prompt({
+        sessionID: invocation.sessionID,
+        text: buildPlanningInspectResponse({ state, diagnostics: [] }),
+        delivery: 'steer',
+      });
+      return;
+    }
+    case 'plan': {
+      const inventory = await createInstructionInventoryLoader(projectDirectory)();
+      const { problemStatement } = parsed.command;
+      await runtimeAccess.withRuntime(invocation.sessionID, runtime =>
+        runtime.create(contextInfo, inventory, problemStatement)
+      );
+      return;
+    }
+    case 'resume': {
+      const { sessionId } = parsed.command;
+      await runtimeAccess.withRuntime(invocation.sessionID, runtime =>
+        runtime.resume(contextInfo, sessionId)
+      );
+      return;
+    }
   }
-
-  let activePlanningState: PlanningState | null = null;
-
-  try {
-    activePlanningState = await input.runtimeAccess.withRuntime(
-      input.sessionID,
-      input.projectDirectory,
-      runtime => runtime.getActive(input.context)
-    );
-  } catch (cause) {
-    diagnostics.push(classifyRuntimeDiagnostic('planner-runtime', cause));
-  }
-
-  input.output.parts.length = 0;
-  input.output.parts.push({
-    type: 'text',
-    text: buildSlashCommandResponse(inventory, {
-      activePlanningState,
-      mutation: { kind: 'none' },
-      diagnostics,
-      ...(input.config ? { config: input.config } : {}),
-    }),
-  } as (typeof input.output.parts)[number]);
 }
 
-async function renderInspectResponse(input: {
-  readonly output: Parameters<NonNullable<Hooks['command.execute.before']>>[1];
-  readonly runtimeAccess: ServerPlannerRuntimeAccess;
-  readonly sessionID: string;
-  readonly projectDirectory: string;
-  readonly context: {
+async function collectDiagnostics(
+  runtimeAccess: ServerPlannerRuntimeAccess,
+  sessionID: string,
+  projectDirectory: string,
+  context: {
     readonly worktreePath: string;
     readonly opencodeSessionId: string;
-  };
-}): Promise<void> {
-  const diagnostics: BrhpRuntimeDiagnostic[] = [];
-  let activePlanningState: PlanningState | null = null;
+  }
+): Promise<Array<{ readonly kind: 'instructions' | 'planner-runtime'; readonly message: string }>> {
+  const diagnostics: Array<{ readonly kind: 'instructions' | 'planner-runtime'; readonly message: string }> =
+    [];
 
   try {
-    activePlanningState = await input.runtimeAccess.withRuntime(
-      input.sessionID,
-      input.projectDirectory,
-      runtime => runtime.getActive(input.context)
-    );
+    await createInstructionInventoryLoader(projectDirectory)();
   } catch (cause) {
-    diagnostics.push(classifyRuntimeDiagnostic('planner-runtime', cause));
+    diagnostics.push({ kind: 'instructions', message: String(cause) });
   }
 
-  input.output.parts.length = 0;
-  input.output.parts.push({
-    type: 'text',
-    text: buildPlanningInspectResponse({
-      state: activePlanningState,
-      diagnostics,
-    }),
-  } as (typeof input.output.parts)[number]);
-}
+  try {
+    await runtimeAccess.withRuntime(sessionID, runtime =>
+      runtime.getActive(context)
+    );
+  } catch (cause) {
+    diagnostics.push({ kind: 'planner-runtime', message: String(cause) });
+  }
 
-function createUnavailableInstructionInventory(projectDirectory: string): InstructionInventory {
-  return {
-    directories: {
-      global: 'unavailable',
-      project: path.join(projectDirectory, '.opencode', 'brhp', 'instructions'),
-    },
-    instructions: [],
-    counts: {
-      global: 0,
-      project: 0,
-      total: 0,
-      skipped: 0,
-    },
-    skippedFiles: [],
-  };
+  return diagnostics;
 }

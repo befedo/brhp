@@ -1,6 +1,8 @@
 /** @jsxImportSource @opentui/solid */
+import type { RGBA } from '@opentui/core';
+import type { ResolvedTheme } from '@opencode/theme/tui';
+
 import { createEffect, createSignal, For, onCleanup, Show } from 'solid-js';
-import type { TuiPluginApi, TuiTheme } from '@opencode-ai/plugin/tui';
 
 import type {
   SidebarLoadFailure,
@@ -10,11 +12,16 @@ import type { SidebarGraphPreview, SidebarModel } from '../../domain/sidebar/sid
 import { subscribeToSidebarRefresh } from '../state/sidebar-refresh.js';
 
 interface SidebarContentProps {
-  readonly api: TuiPluginApi;
-  readonly theme: TuiTheme;
+  readonly theme: ResolvedTheme;
   readonly sessionId: string;
   readonly loadModel: (sessionId: string) => Promise<SidebarLoadResult>;
 }
+
+type SidebarColors = {
+  readonly text: RGBA;
+  readonly textMuted: RGBA;
+  readonly error: RGBA;
+};
 
 type LoadState = 'loading' | 'ready' | 'error';
 
@@ -69,7 +76,11 @@ export function SidebarContent(props: SidebarContentProps) {
     unsubscribe();
   });
 
-  const colors = () => props.theme.current;
+  const colors = () => ({
+    text: props.theme.text.base,
+    textMuted: props.theme.text.muted,
+    error: props.theme.text.feedback.error.base,
+  });
 
   return (
     <box flexDirection="column">
@@ -207,7 +218,7 @@ export function SidebarContent(props: SidebarContentProps) {
 }
 
 export function SidebarGraphPreviewContent(props: {
-  readonly colors: TuiTheme['current'];
+  readonly colors: SidebarColors;
   readonly graphPreview: SidebarGraphPreview;
 }) {
   return (

@@ -56,7 +56,7 @@ An example config is provided at `.opencode/brhp/config.example.yaml`. Currently
 
 Requirements:
 
-- OpenCode `v1.4.0+`
+- OpenCode `v2.0.0+`
 - Node.js `20+`
 
 BRHP is not published on npm yet. Until it is, load it from a local checkout with OpenCode's path-like plugin spec support and a `file://` package path.
@@ -79,20 +79,30 @@ Then add the local package path to your OpenCode runtime config.
 
 `opencode.json`
 
-```json
+```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["file:///absolute/path/to/brhp"]
+  "plugins": [
+    {
+      "package": "file:///absolute/path/to/brhp",
+      "options": {}
+    }
+  ]
 }
 ```
 
-Add the same local package path to your OpenCode TUI config.
+Add the same local package path to your OpenCode TUI config (`cli.json` in v2).
 
-`tui.json`
+`cli.json`
 
-```json
+```jsonc
 {
-  "plugin": ["file:///absolute/path/to/brhp"]
+  "plugins": [
+    {
+      "package": "file:///absolute/path/to/brhp",
+      "options": {}
+    }
+  ]
 }
 ```
 

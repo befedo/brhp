@@ -39,28 +39,8 @@ const tuiModule = await import(pathToFileURL(tuiEntry).href);
 assertServerModule(serverModule, 'server default export');
 assertTuiModule(tuiModule, 'tui default export');
 
-const hooks = await serverModule.default.server({
-  client: {},
-  project: {},
-  directory: rootPath,
-  worktree: rootPath,
-  serverUrl: new URL('https://example.com'),
-  $: {},
-});
-
-assert(typeof hooks.config === 'function', 'server hooks must expose config registration');
-assert(
-  typeof hooks['command.execute.before'] === 'function',
-  'server hooks must expose slash command handler'
-);
-assert(
-  typeof hooks['experimental.chat.system.transform'] === 'function',
-  'server hooks must expose system prompt transform'
-);
-assert(hooks.tool?.brhp_get_active_plan, 'server hooks must expose brhp_get_active_plan');
-assert(hooks.tool?.brhp_decompose_node, 'server hooks must expose brhp_decompose_node');
-assert(hooks.tool?.brhp_validate_active_scope, 'server hooks must expose brhp_validate_active_scope');
-assert(hooks.tool?.brhp_complete_leaf, 'server hooks must expose brhp_complete_leaf');
+await smokeServerModule(serverModule, rootPath);
+await smokeTuiModule(tuiModule, rootPath);
 
 await verifyLocalFilePackageSpec();
 await verifyPackedArtifact();
@@ -75,12 +55,133 @@ function assert(condition, message) {
 
 function assertServerModule(module, label) {
   assert(module.default?.id === 'brhp', `${label} must expose plugin id`);
-  assert(typeof module.default?.server === 'function', `${label} must expose server function`);
+  assert(typeof module.default?.setup === 'function', `${label} must expose setup function`);
 }
 
 function assertTuiModule(module, label) {
   assert(module.default?.id === 'brhp', `${label} must expose plugin id`);
-  assert(typeof module.default?.tui === 'function', `${label} must expose tui function`);
+  assert(typeof module.default?.setup === 'function', `${label} must expose setup function`);
+}
+
+async function smokeServerModule(module, worktreePath) {
+  const registeredTools = [];
+  const registeredCommands = [];
+  const registeredHooks = [];
+  let brhpCommand;
+  let promptText;
+
+  const context = {
+    location: {
+      directory: worktreePath,
+      project: { id: 'global', directory: worktreePath, canonical: worktreePath },
+    },
+    tool: {
+      transform: cb => {
+        const editor = {
+          add: def => {
+            registeredTools.push(def.name);
+          },
+        };
+        cb(editor);
+        return { dispose: () => {} };
+      },
+    },
+    command: {
+      transform: cb => {
+        const editor = {
+          add: def => {
+            registeredCommands.push(def.name);
+            if (def.name === 'brhp') {
+              brhpCommand = def;
+            }
+          },
+        };
+        cb(editor);
+        return { dispose: () => {} };
+      },
+    },
+    session: {
+      hook: (name, cb) => {
+        registeredHooks.push(name);
+        return { dispose: () => {} };
+      },
+      prompt: async input => {
+        promptText = input.text;
+        return {};
+      },
+    },
+  };
+
+  const cleanup = await module.default.setup(context);
+  assert(typeof cleanup === 'function', 'server setup must return a cleanup function');
+
+  const expectedTools = [
+    'brhp_get_active_plan',
+    'brhp_decompose_node',
+    'brhp_validate_active_scope',
+    'brhp_complete_leaf',
+    'brhp_query_nodes',
+    'brhp_get_node',
+    'brhp_search_nodes',
+  ];
+  for (const tool of expectedTools) {
+    assert(registeredTools.includes(tool), `server must register ${tool} tool`);
+  }
+  assert(registeredCommands.includes('brhp'), 'server must register brhp command');
+  assert(registeredHooks.includes('context'), 'server must register context system prompt hook');
+  assert(brhpCommand, 'brhp command definition must be captured');
+
+  // Invoke /brhp inspect end-to-end through the V2 command execute path.
+  await brhpCommand.execute({
+    sessionID: 'package-smoke-session',
+    prompt: { text: '/brhp inspect', files: [] },
+    delivery: 'steer',
+  });
+  assert(
+    String(promptText).includes('# BRHP Inspect'),
+    'server brhp inspect command must render inspect output'
+  );
+
+  await cleanup();
+}
+
+async function smokeTuiModule(module, worktreePath) {
+  const claims = [];
+  let layers = 0;
+
+  const context = {
+    location: { directory: worktreePath },
+    theme: {
+      current: {
+        text: { base: '#000000', muted: '#666666', feedback: { error: { base: '#ff0000' } } },
+        background: { base: '#ffffff' },
+        border: { base: '#cccccc' },
+      },
+    },
+    ui: {
+      slot: claim => {
+        claims.push(claim);
+        return () => claims.push(`un:${claim.append}`);
+      },
+      toast: { show: () => {} },
+    },
+    keymap: {
+      layer: () => {
+        layers += 1;
+      },
+    },
+  };
+
+  const cleanup = await module.default.setup(context);
+  assert(typeof cleanup === 'function', 'tui setup must return a cleanup function');
+
+  assert(
+    claims.some(c => c.append === 'sidebar.content'),
+    'tui plugin must register sidebar.content slot'
+  );
+  assert(layers >= 1, 'tui plugin must register a keymap layer');
+
+  await cleanup();
 }
 
 async function verifyLocalFilePackageSpec() {
@@ -95,6 +196,7 @@ async function verifyLocalFilePackageSpec() {
 
   assertServerModule(localServerModule, 'local file package server export');
   assertTuiModule(localTuiModule, 'local file package tui export');
+  await smokeServerModule(localServerModule, rootPath);
   await smokeTuiModule(localTuiModule, rootPath);
 }
 
@@ -139,49 +241,6 @@ function resolvePackagePath(packageRelativePath) {
   return resolved;
 }
 
-async function smokeTuiModule(module, worktreePath) {
-  const events = [];
-  let disposeHandler;
-
-  await module.default.tui({
-    state: {
-      path: {
-        worktree: worktreePath,
-        directory: worktreePath,
-      },
-    },
-    slots: {
-      register() {
-        events.push('registerSlots');
-        return () => events.push('unregisterSlots');
-      },
-    },
-    command: {
-      register() {
-        events.push('registerCommand');
-        return () => events.push('unregisterCommand');
-      },
-    },
-    lifecycle: {
-      onDispose(handler) {
-        disposeHandler = handler;
-      },
-    },
-    ui: {
-      toast() {},
-    },
-  });
-
-  assert(events.includes('registerSlots'), 'tui plugin must register sidebar slots');
-  assert(events.includes('registerCommand'), 'tui plugin must register commands');
-  assert(typeof disposeHandler === 'function', 'tui plugin must register a dispose handler');
-
-  disposeHandler();
-
-  assert(events.includes('unregisterSlots'), 'tui plugin must unregister sidebar slots');
-  assert(events.includes('unregisterCommand'), 'tui plugin must unregister commands');
-}
-
 async function verifyPackedArtifact() {
   const tempRoot = await mkdtemp(path.join(tmpdir(), 'brhp-package-'));
 
@@ -191,7 +250,9 @@ async function verifyPackedArtifact() {
       ['pack', '--ignore-scripts', '--dry-run=false', '--json', '--pack-destination', tempRoot],
       rootPath
     );
-    const [{ filename }] = JSON.parse(packResult.stdout);
+    const packed = JSON.parse(packResult.stdout);
+    const entries = Array.isArray(packed) ? packed : Object.values(packed);
+    const [{ filename }] = entries;
 
     assert(typeof filename === 'string' && filename.length > 0, 'npm pack did not return a filename');
 
@@ -219,82 +280,61 @@ async function verifyPackedArtifact() {
       `import serverModule from 'brhp';
 import tuiModule from 'brhp/tui';
 
-const events = [];
-let disposeHandler;
-
 if (serverModule?.id !== 'brhp') throw new Error('server export missing id');
-if (typeof serverModule?.server !== 'function') throw new Error('server export missing server function');
+if (typeof serverModule?.setup !== 'function') throw new Error('server export missing setup function');
 if (tuiModule?.id !== 'brhp') throw new Error('tui export missing id');
-if (typeof tuiModule?.tui !== 'function') throw new Error('tui export missing tui function');
+if (typeof tuiModule?.setup !== 'function') throw new Error('tui export missing setup function');
 
-const hooks = await serverModule.server({
-  client: {},
-  project: {},
-  directory: ${JSON.stringify(installRoot)},
-  worktree: ${JSON.stringify(installRoot)},
-  serverUrl: new URL('https://example.com'),
-  $: {},
-});
+const registeredTools = [];
+const registeredCommands = [];
+let promptText;
 
-if (typeof hooks.config !== 'function') throw new Error('server hooks missing config registration');
-if (typeof hooks['command.execute.before'] !== 'function') throw new Error('server hooks missing slash command handler');
-if (typeof hooks['experimental.chat.system.transform'] !== 'function') throw new Error('server hooks missing system prompt transform');
-if (!hooks.tool?.brhp_get_active_plan) throw new Error('server hooks missing brhp_get_active_plan');
-if (!hooks.tool?.brhp_decompose_node) throw new Error('server hooks missing brhp_decompose_node');
-if (!hooks.tool?.brhp_validate_active_scope) throw new Error('server hooks missing brhp_validate_active_scope');
-          if (!hooks.tool?.brhp_complete_leaf) throw new Error('server hooks missing brhp_complete_leaf');
-
-const inspectOutput = { parts: [{ type: 'text', text: 'replace me' }] };
-await hooks['command.execute.before']?.(
-  {
-    command: 'brhp',
-    sessionID: 'package-smoke-session',
-    arguments: 'inspect',
+const context = {
+  location: {
+    directory: ${JSON.stringify(installRoot)},
+    project: { id: 'global', directory: ${JSON.stringify(installRoot)}, canonical: ${JSON.stringify(installRoot)} },
   },
-  inspectOutput
-);
-
-if (!String(inspectOutput.parts[0]?.text ?? '').includes('# BRHP Inspect')) {
-  throw new Error('server hooks missing inspect command response');
-}
-
-await tuiModule.tui({
-  state: {
-    path: {
-      worktree: ${JSON.stringify(installRoot)},
-      directory: ${JSON.stringify(installRoot)},
-    },
-  },
-  slots: {
-    register() {
-      events.push('registerSlots');
-      return () => events.push('unregisterSlots');
+  tool: {
+    transform: cb => {
+      const editor = { add: def => { registeredTools.push(def.name); } };
+      cb(editor);
+      return { dispose: () => {} };
     },
   },
   command: {
-    register() {
-      events.push('registerCommand');
-      return () => events.push('unregisterCommand');
+    transform: cb => {
+      const editor = { add: def => { registeredCommands.push(def.name); } };
+      cb(editor);
+      return { dispose: () => {} };
     },
   },
-  lifecycle: {
-    onDispose(handler) {
-      disposeHandler = handler;
-    },
+  session: {
+    hook: () => ({ dispose: () => {} }),
+    prompt: async input => { promptText = input.text; return {}; },
   },
-  ui: {
-    toast() {},
-  },
-});
+};
 
-if (!events.includes('registerSlots')) throw new Error('tui plugin did not register slots');
-if (!events.includes('registerCommand')) throw new Error('tui plugin did not register commands');
-if (typeof disposeHandler !== 'function') throw new Error('tui plugin did not register dispose handler');
+const cleanup = await serverModule.setup(context);
+if (typeof cleanup !== 'function') throw new Error('server setup must return cleanup');
 
-disposeHandler();
+const expectedTools = ['brhp_get_active_plan','brhp_decompose_node','brhp_validate_active_scope','brhp_complete_leaf','brhp_query_nodes','brhp_get_node','brhp_search_nodes'];
+for (const tool of expectedTools) {
+  if (!registeredTools.includes(tool)) throw new Error(\`server missing \${tool} tool\`);
+}
+if (!registeredCommands.includes('brhp')) throw new Error('server missing brhp command');
 
-if (!events.includes('unregisterSlots')) throw new Error('tui plugin did not unregister slots');
-if (!events.includes('unregisterCommand')) throw new Error('tui plugin did not unregister commands');
+const tuiContext = {
+  location: { directory: ${JSON.stringify(installRoot)} },
+  theme: { current: { text: { base: '#000000', muted: '#666666', feedback: { error: { base: '#ff0000' } } }, background: { base: '#ffffff' }, border: { base: '#cccccc' } } },
+  ui: { slot: () => () => {}, toast: { show: () => {} } },
+  keymap: { layer: () => {} },
+};
+
+const tuiCleanup = await tuiModule.setup(tuiContext);
+if (typeof tuiCleanup !== 'function') throw new Error('tui setup must return cleanup');
+await tuiCleanup();
+
+await cleanup();
 `
     );
 
